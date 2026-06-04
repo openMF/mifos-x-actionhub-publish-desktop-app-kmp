@@ -1,0 +1,85 @@
+# Sub-action: microsoft-store — Submit MSIX to Microsoft Store via Partner Center API
+# Part of openMF/mifos-x-actionhub-publish-desktop-app-kmp@v2.0.0
+# Per epic GOAL.md D42: NEW sub-action subdir; root action.yml unchanged.
+name: 'Publish Desktop App (Microsoft Store via Partner Center)'
+description: 'Push an MSIX package to the Microsoft Store via Partner Center submission API.'
+
+inputs:
+  msix_path:
+    description: 'Path to the .msix or .msixbundle to submit'
+    required: true
+  ms_partner_center_tenant_id:
+    description: 'Partner Center tenant ID'
+    required: true
+  ms_partner_center_client_id:
+    description: 'Partner Center client ID (Azure AD app)'
+    required: true
+  ms_partner_center_client_secret:
+    description: 'Partner Center client secret'
+    required: true
+  ms_app_id:
+    description: 'Microsoft Store app product ID'
+    required: true
+  release_flight:
+    description: 'Optional flight name (skip → mainstream release)'
+    required: false
+    default: ''
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Verify input MSIX exists
+      shell: pwsh
+      env:
+        MSIX_PATH: ${{ inputs.msix_path }}
+      run: |
+        if (-not (Test-Path $env:MSIX_PATH)) {
+          throw "MSIX not found at $env:MSIX_PATH"
+        }
+
+    - name: Acquire Partner Center access token
+      id: token
+      shell: pwsh
+      env:
+        TENANT_ID: ${{ inputs.ms_partner_center_tenant_id }}
+        CLIENT_ID: ${{ inputs.ms_partner_center_client_id }}
+        CLIENT_SECRET: ${{ inputs.ms_partner_center_client_secret }}
+      run: |
+        $body = @{
+          grant_type    = 'client_credentials'
+          client_id     = $env:CLIENT_ID
+          client_secret = $env:CLIENT_SECRET
+          resource      = 'https://manage.devcenter.microsoft.com'
+        }
+        $resp = Invoke-RestMethod -Method Post `
+          -Uri "https://login.microsoftonline.com/$env:TENANT_ID/oauth2/token" `
+          -Body $body
+        "::add-mask::$($resp.access_token)" | Write-Host
+        "ACCESS_TOKEN=$($resp.access_token)" >> $env:GITHUB_OUTPUT
+
+    - name: Submit MSIX to Partner Center
+      shell: pwsh
+      env:
+        ACCESS_TOKEN: ${{ steps.token.outputs.ACCESS_TOKEN }}
+        APP_ID: ${{ inputs.ms_app_id }}
+        MSIX_PATH: ${{ inputs.msix_path }}
+        RELEASE_FLIGHT: ${{ inputs.release_flight }}
+      run: |
+        $headers = @{ Authorization = "Bearer $env:ACCESS_TOKEN" }
+        # 1. Create submission (or flight submission)
+        $endpoint = if ([string]::IsNullOrEmpty($env:RELEASE_FLIGHT)) {
+          "https://manage.devcenter.microsoft.com/v1.0/my/applications/$env:APP_ID/submissions"
+        } else {
+          "https://manage.devcenter.microsoft.com/v1.0/my/applications/$env:APP_ID/flights/$env:RELEASE_FLIGHT/submissions"
+        }
+        $submission = Invoke-RestMethod -Method Post -Uri $endpoint -Headers $headers
+        Write-Host "Submission created: $($submission.id)"
+        # 2. Upload MSIX to the submission's fileUploadUrl (Azure blob)
+        $uploadUrl = $submission.fileUploadUrl
+        Invoke-RestMethod -Method Put -Uri $uploadUrl `
+          -Headers @{ 'x-ms-blob-type' = 'BlockBlob' } `
+          -InFile $env:MSIX_PATH
+        # 3. Commit the submission
+        $commitUrl = "$endpoint/$($submission.id)/commit"
+        Invoke-RestMethod -Method Post -Uri $commitUrl -Headers $headers
+        Write-Host "Submission $($submission.id) committed to Partner Center."

@@ -1,0 +1,79 @@
+# Sub-action: dmg-notarized — Apple Developer ID notarization + stapler
+# Part of openMF/mifos-x-actionhub-publish-desktop-app-kmp@v2.0.0
+# Per epic GOAL.md D42: NEW sub-action subdir added to the EXISTING repo
+# (root action.yml byte-for-byte preserved). Backward-compat for every
+# existing consumer of the root composite action.
+name: 'Publish Desktop App (DMG Notarized)'
+description: 'Sign, notarize, and staple a macOS DMG using Apple Developer ID + notarytool.'
+
+inputs:
+  app_path:
+    description: 'Path to the .app bundle or .dmg to notarize'
+    required: true
+  apple_id:
+    description: 'Apple ID for notarization (App Store Connect account)'
+    required: true
+  team_id:
+    description: 'Apple Developer Team ID'
+    required: true
+  appstore_key_id:
+    description: 'App Store Connect API key ID'
+    required: true
+  appstore_issuer_id:
+    description: 'App Store Connect issuer ID'
+    required: true
+  appstore_private_key_p8:
+    description: 'Base64-encoded .p8 App Store Connect API key (decoded inline)'
+    required: true
+
+outputs:
+  notarization_log:
+    description: 'Notarization log path (post-stapler)'
+    value: ${{ steps.notarize.outputs.log_path }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Decode App Store Connect API key
+      shell: bash
+      env:
+        APPSTORE_PRIVATE_KEY_P8_B64: ${{ inputs.appstore_private_key_p8 }}
+      run: |
+        mkdir -p "$RUNNER_TEMP/asc"
+        echo "$APPSTORE_PRIVATE_KEY_P8_B64" | base64 --decode > "$RUNNER_TEMP/asc/AuthKey.p8"
+        chmod 600 "$RUNNER_TEMP/asc/AuthKey.p8"
+
+    - name: Submit to notarytool
+      id: notarize
+      shell: bash
+      env:
+        APPLE_ID: ${{ inputs.apple_id }}
+        TEAM_ID: ${{ inputs.team_id }}
+        KEY_ID: ${{ inputs.appstore_key_id }}
+        ISSUER_ID: ${{ inputs.appstore_issuer_id }}
+        APP_PATH: ${{ inputs.app_path }}
+      run: |
+        LOG_PATH="$RUNNER_TEMP/notarization.log"
+        # Submit and wait for the verdict (long-poll, no extra polling needed)
+        xcrun notarytool submit "$APP_PATH" \
+          --key "$RUNNER_TEMP/asc/AuthKey.p8" \
+          --key-id "$KEY_ID" \
+          --issuer "$ISSUER_ID" \
+          --team-id "$TEAM_ID" \
+          --apple-id "$APPLE_ID" \
+          --wait \
+          --output-format json | tee "$LOG_PATH"
+        echo "log_path=$LOG_PATH" >> "$GITHUB_OUTPUT"
+
+    - name: Staple notarization ticket
+      shell: bash
+      env:
+        APP_PATH: ${{ inputs.app_path }}
+      run: |
+        xcrun stapler staple "$APP_PATH"
+        xcrun stapler validate "$APP_PATH"
+
+    - name: Cleanup secrets
+      shell: bash
+      if: always()
+      run: rm -f "$RUNNER_TEMP/asc/AuthKey.p8"

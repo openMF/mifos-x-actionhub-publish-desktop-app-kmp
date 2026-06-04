@@ -1,0 +1,66 @@
+# Sub-action: msi-signed — Azure Trusted Signing for Windows MSI
+# Part of openMF/mifos-x-actionhub-publish-desktop-app-kmp@v2.0.0
+# Per epic GOAL.md D42: NEW sub-action subdir; root action.yml unchanged.
+name: 'Publish Desktop App (MSI Signed via Azure Trusted Signing)'
+description: 'Sign a Windows MSI using Azure Trusted Signing.'
+
+inputs:
+  msi_path:
+    description: 'Path to the .msi to sign'
+    required: true
+  azure_ts_tenant_id:
+    description: 'Azure tenant ID (Trusted Signing)'
+    required: true
+  azure_ts_client_id:
+    description: 'Azure client ID (Trusted Signing service principal)'
+    required: true
+  azure_ts_client_secret:
+    description: 'Azure client secret'
+    required: true
+  azure_ts_endpoint:
+    description: 'Trusted Signing endpoint URL (e.g. https://wus.codesigning.azure.net)'
+    required: true
+  trusted_signing_account_name:
+    description: 'Trusted Signing account name'
+    required: true
+  certificate_profile_name:
+    description: 'Certificate profile name'
+    required: true
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Verify input MSI exists
+      shell: pwsh
+      env:
+        MSI_PATH: ${{ inputs.msi_path }}
+      run: |
+        if (-not (Test-Path $env:MSI_PATH)) {
+          throw "MSI not found at $env:MSI_PATH"
+        }
+
+    - name: Sign MSI via Azure Trusted Signing
+      uses: azure/trusted-signing-action@v0.5.0
+      with:
+        azure-tenant-id: ${{ inputs.azure_ts_tenant_id }}
+        azure-client-id: ${{ inputs.azure_ts_client_id }}
+        azure-client-secret: ${{ inputs.azure_ts_client_secret }}
+        endpoint: ${{ inputs.azure_ts_endpoint }}
+        trusted-signing-account-name: ${{ inputs.trusted_signing_account_name }}
+        certificate-profile-name: ${{ inputs.certificate_profile_name }}
+        files-folder: ${{ inputs.msi_path }}
+        files-folder-filter: msi
+        file-digest: SHA256
+        timestamp-rfc3161: http://timestamp.acs.microsoft.com
+        timestamp-digest: SHA256
+
+    - name: Verify signature
+      shell: pwsh
+      env:
+        MSI_PATH: ${{ inputs.msi_path }}
+      run: |
+        $sig = Get-AuthenticodeSignature $env:MSI_PATH
+        if ($sig.Status -ne 'Valid') {
+          throw "Signature invalid: $($sig.Status) — $($sig.StatusMessage)"
+        }
+        Write-Host "Signature valid: $($sig.SignerCertificate.Subject)"
